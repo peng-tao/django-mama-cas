@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 user_document = get_user_document()
 
 
-class MTicket(me.Document):
+class MTicket(object):
 
     TICKET_EXPIRE = getattr(settings, 'MAMA_CAS_TICKET_EXPIRE', 90)
     TICKET_RAND_LEN = getattr(settings, 'MAMA_CAS_TICKET_RAND_LEN', 32)
@@ -27,11 +27,6 @@ class MTicket(me.Document):
     user = me.ReferenceField(user_document)
     expires = me.DateTimeField()
     consumed = me.DateTimeField(null=True)
-
-    meta = {
-        'allow_inheritance': True,
-        'collection': 'ticket'
-    }
 
     @property
     def name(self):
@@ -61,11 +56,15 @@ class MTicket(me.Document):
         return self.expires <= now()
 
 
-class MServiceTicket(MTicket):
+class MServiceTicket(MTicket, me.Document):
     TICKET_PREFIX = 'ST'
 
     service = me.StringField(max_length=255)
     primary = me.BooleanField(default=False)
+
+    meta = {
+        'collection': 'service_ticket'
+    }
 
     def is_primary(self):
         """
@@ -95,14 +94,18 @@ class MServiceTicket(MTicket):
             logger.debug("Single sign-out request sent to %s" % self.service)
 
 
-class MProxyTicket(MTicket):
+class MProxyTicket(MTicket, me.Document):
     TICKET_PREFIX = 'PT'
 
     service = me.StringField(max_length=255)
     granted_by_pgt = me.ReferenceField('ProxyGrantingTicket')
 
+    meta = {
+        'collection': 'proxy_ticket'
+    }
 
-class MProxyGrantingTicket(MTicket):
+
+class MProxyGrantingTicket(MTicket, me.Document):
     TICKET_PREFIX = 'PGT'
     IOU_PREFIX = 'PGTIOU'
     TICKET_EXPIRE = getattr(settings, 'SESSION_COOKIE_AGE')
@@ -110,3 +113,7 @@ class MProxyGrantingTicket(MTicket):
     iou = me.StringField(max_length=255, unique=True)
     granted_by_st = me.ReferenceField('MServiceTicket', null=True)
     granted_by_pt = me.ReferenceField('MProxyTicket', null=True)
+
+    meta = {
+        'collection': 'proxy_granting_ticket'
+    }

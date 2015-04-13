@@ -27,7 +27,8 @@ from mama_cas.utils import is_scheme_https
 from mama_cas.utils import clean_service_url
 from mama_cas.utils import is_valid_service_url
 
-from mama_cas.mongo_models import MTicket, MServiceTicket, MProxyGrantingTicket
+from mama_cas.mongo_models import (
+    MProxyTicket, MServiceTicket, MProxyGrantingTicket)
 
 if gevent:
     from gevent.pool import Pool
@@ -38,12 +39,7 @@ if gevent:
 logger = logging.getLogger(__name__)
 
 
-class TicketManager(models.Manager):
-
-    def contribute_to_class(self, model, name):
-        super(TicketManager, self).contribute_to_class(model, name)
-        self.dj_model = self.model
-        self.model = MTicket
+class TicketManager(object):
 
     def create_ticket(self, ticket=None, **kwargs):
         """
@@ -127,11 +123,8 @@ class TicketManager(models.Manager):
         A custom management command is provided that executes this method
         on all applicable models by running ``manage.py cleanupcas``.
         """
-        import pdb; pdb.set_trace()
-        for ticket in self.model.objects.filter(Q(consumed__exists=True) |
-                                                Q(expires__exists=True) &
-                                                Q(expires__lte=now())).order_by('-expires'):
-            import pdb; pdb.set_trace()
+        for ticket in self.filter(Q(consumed__exists=True) |
+                                  Q(expires__lte=now())).order_by('-expires'):
             try:
                 ticket.delete()
             except models.ProtectedError:
@@ -147,20 +140,25 @@ class TicketManager(models.Manager):
                                   expires__gt=now()):
             ticket.consume()
 
+    def get_query_set(self):
+        return self.model.objects
+
+    def get_empty_query_set(self):
+        return self.model.objects.none()
+
 
 @python_2_unicode_compatible
-class Ticket(models.Model):
+class Ticket(object):
     """
     ``Ticket`` is an abstract base class implementing common methods
     and fields for CAS tickets.
     """
-    objects = TicketManager()
 
     def __str__(self):
         return self.ticket
 
 
-class ServiceTicketManager(TicketManager):
+class ServiceTicketManager(TicketManager, models.Manager):
 
     def contribute_to_class(self, model, name):
         super(ServiceTicketManager, self).contribute_to_class(model, name)
@@ -195,7 +193,7 @@ class ServiceTicketManager(TicketManager):
                 ticket.request_sign_out()
 
 
-class ServiceTicket(Ticket):
+class ServiceTicket(Ticket, models.Model):
     """
     (3.1) A ``ServiceTicket`` is used by the client as a credential to
     obtain access to a service. It is obtained upon a client's presentation
@@ -208,19 +206,29 @@ class ServiceTicket(Ticket):
         verbose_name_plural = _('service tickets')
 
 
-class ProxyTicket(Ticket):
+class ProxyTicketManager(TicketManager, models.Manager):
+
+    def contribute_to_class(self, model, name):
+        super(ProxyTicketManager, self).contribute_to_class(model, name)
+        self.dj_model = self.model
+        self.model = MProxyTicket
+
+
+class ProxyTicket(Ticket, models.Model):
     """
     (3.2) A ``ProxyTicket`` is used by a service as a credential to obtain
     access to a back-end service on behalf of a client. It is obtained upon
     a service's presentation of a ``ProxyGrantingTicket`` and a service
     identifier.
     """
+    objects = ProxyTicketManager()
+
     class Meta:
         verbose_name = _('proxy ticket')
         verbose_name_plural = _('proxy tickets')
 
 
-class ProxyGrantingTicketManager(TicketManager):
+class ProxyGrantingTicketManager(TicketManager, models.Manager):
 
     def contribute_to_class(self, model, name):
         super(ProxyGrantingTicketManager, self).contribute_to_class(model, name)
@@ -321,7 +329,7 @@ class ProxyGrantingTicketManager(TicketManager):
         return t
 
 
-class ProxyGrantingTicket(Ticket):
+class ProxyGrantingTicket(Ticket, models.Model):
     """
     (3.3) A ``ProxyGrantingTicket`` is used by a service to obtain proxy
     tickets for obtaining access to a back-end service on behalf of a
