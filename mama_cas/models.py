@@ -3,32 +3,31 @@ from __future__ import unicode_literals
 from datetime import timedelta
 import logging
 import os
-import re
 import time
 
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
 from django.utils.crypto import get_random_string
 from django.utils.encoding import python_2_unicode_compatible
 from django.utils.http import same_origin
 from django.utils.timezone import now
 from django.utils.translation import ugettext_lazy as _
 
+from mongoengine import Q
 import requests
 
 from mama_cas.compat import gevent
-from mama_cas.compat import user_model
 from mama_cas.exceptions import BadPgt
 from mama_cas.exceptions import InvalidProxyCallback
 from mama_cas.exceptions import InvalidRequest
 from mama_cas.exceptions import InvalidService
 from mama_cas.exceptions import InvalidTicket
-from mama_cas.request import SingleSignOutRequest
 from mama_cas.utils import add_query_params
 from mama_cas.utils import is_scheme_https
 from mama_cas.utils import clean_service_url
 from mama_cas.utils import is_valid_service_url
+
+from mama_cas.mongo_models import MTicket, MServiceTicket, MProxyGrantingTicket
 
 if gevent:
     from gevent.pool import Pool
@@ -40,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 
 class TicketManager(models.Manager):
+
+    def contribute_to_class(self, model, name):
+        super(TicketManager, self).contribute_to_class(model, name)
+        self.dj_model = self.model
+        self.model = MTicket
+
     def create_ticket(self, ticket=None, **kwargs):
         """
         Create a new ``Ticket``. Additional arguments are passed to the
@@ -83,7 +88,7 @@ class TicketManager(models.Manager):
             raise InvalidTicket("Ticket string %s is invalid" % ticket)
 
         try:
-            t = self.get(ticket=ticket)
+            t = self.model.objects.get(ticket=ticket)
         except self.model.DoesNotExist:
             raise InvalidTicket("Ticket %s does not exist" % ticket)
 
@@ -122,8 +127,11 @@ class TicketManager(models.Manager):
         A custom management command is provided that executes this method
         on all applicable models by running ``manage.py cleanupcas``.
         """
-        for ticket in self.filter(Q(consumed__isnull=False) |
-                                  Q(expires__lte=now())).order_by('-expires'):
+        import pdb; pdb.set_trace()
+        for ticket in self.model.objects.filter(Q(consumed__exists=True) |
+                                                Q(expires__exists=True) &
+                                                Q(expires__lte=now())).order_by('-expires'):
+            import pdb; pdb.set_trace()
             try:
                 ticket.delete()
             except models.ProtectedError:
@@ -146,52 +154,19 @@ class Ticket(models.Model):
     ``Ticket`` is an abstract base class implementing common methods
     and fields for CAS tickets.
     """
-    TICKET_EXPIRE = getattr(settings, 'MAMA_CAS_TICKET_EXPIRE', 90)
-    TICKET_RAND_LEN = getattr(settings, 'MAMA_CAS_TICKET_RAND_LEN', 32)
-    TICKET_RE = re.compile("^[A-Z]{2,3}-[0-9]{10,}-[a-zA-Z0-9]{%d}$" % TICKET_RAND_LEN)
-
-    ticket = models.CharField(_('ticket'), max_length=255, unique=True)
-    user = models.ForeignKey(user_model, verbose_name=_('user'))
-    expires = models.DateTimeField(_('expires'))
-    consumed = models.DateTimeField(_('consumed'), null=True)
-
     objects = TicketManager()
-
-    class Meta:
-        abstract = True
 
     def __str__(self):
         return self.ticket
 
-    @property
-    def name(self):
-        return self._meta.verbose_name
-
-    def consume(self):
-        """
-        Consume a ``Ticket`` by populating the ``consumed`` field with
-        the current datetime. A consumed ``Ticket`` is invalid for future
-        authentication attempts.
-        """
-        self.consumed = now()
-        self.save()
-
-    def is_consumed(self):
-        """
-        Check a ``Ticket``s consumed state. Return ``True`` if the ticket is
-        consumed, and ``False`` otherwise.
-        """
-        return self.consumed is not None
-
-    def is_expired(self):
-        """
-        Check a ``Ticket``s expired state. Return ``True`` if the ticket is
-        expired, and ``False`` otherwise.
-        """
-        return self.expires <= now()
-
 
 class ServiceTicketManager(TicketManager):
+
+    def contribute_to_class(self, model, name):
+        super(ServiceTicketManager, self).contribute_to_class(model, name)
+        self.dj_model = self.model
+        self.model = MServiceTicket
+
     def request_sign_out(self, user):
         """
         Send a single sign-out request to each service accessed by a
@@ -226,43 +201,11 @@ class ServiceTicket(Ticket):
     obtain access to a service. It is obtained upon a client's presentation
     of credentials and a service identifier to /login.
     """
-    TICKET_PREFIX = 'ST'
-
-    service = models.CharField(_('service'), max_length=255)
-    primary = models.BooleanField(_('primary'), default=False)
-
     objects = ServiceTicketManager()
 
     class Meta:
         verbose_name = _('service ticket')
         verbose_name_plural = _('service tickets')
-
-    def is_primary(self):
-        """
-        Check the credential origin for a ``ServiceTicket``. If the ticket was
-        issued from the presentation of the user's primary credentials,
-        return ``True``, otherwise return ``False``.
-        """
-        if self.primary:
-            return True
-        return False
-
-    def request_sign_out(self):
-        """
-        Send a POST request to the ``ServiceTicket``s service URL to
-        request sign-out. The remote session is identified by the
-        service ticket string that instantiated the session.
-        """
-        request = SingleSignOutRequest(context={'ticket': self})
-        try:
-            resp = requests.post(self.service, data=request.render_content(),
-                                 headers=request.headers())
-            resp.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logger.warning("Single sign-out request to %s returned %s" %
-                           (self.service, e))
-        else:
-            logger.debug("Single sign-out request sent to %s" % self.service)
 
 
 class ProxyTicket(Ticket):
@@ -272,18 +215,18 @@ class ProxyTicket(Ticket):
     a service's presentation of a ``ProxyGrantingTicket`` and a service
     identifier.
     """
-    TICKET_PREFIX = 'PT'
-
-    service = models.CharField(_('service'), max_length=255)
-    granted_by_pgt = models.ForeignKey('ProxyGrantingTicket',
-                                       verbose_name=_('granted by proxy-granting ticket'))
-
     class Meta:
         verbose_name = _('proxy ticket')
         verbose_name_plural = _('proxy tickets')
 
 
 class ProxyGrantingTicketManager(TicketManager):
+
+    def contribute_to_class(self, model, name):
+        super(ProxyGrantingTicketManager, self).contribute_to_class(model, name)
+        self.dj_model = self.model
+        self.model = MProxyGrantingTicket
+
     def create_ticket(self, pgturl, **kwargs):
         """
         When a ``pgtUrl`` parameter is provided to ``/serviceValidate`` or
@@ -359,7 +302,7 @@ class ProxyGrantingTicketManager(TicketManager):
             raise InvalidTicket("Ticket string %s is invalid" % ticket)
 
         try:
-            t = self.get(ticket=ticket)
+            t = self.model.objects.get(ticket=ticket)
         except self.model.DoesNotExist:
             raise BadPgt("Ticket %s does not exist" % ticket)
 
@@ -385,18 +328,6 @@ class ProxyGrantingTicket(Ticket):
     client. It is obtained upon validation of a ``ServiceTicket`` or a
     ``ProxyTicket``.
     """
-    TICKET_PREFIX = 'PGT'
-    IOU_PREFIX = 'PGTIOU'
-    TICKET_EXPIRE = getattr(settings, 'SESSION_COOKIE_AGE')
-
-    iou = models.CharField(_('iou'), max_length=255, unique=True)
-    granted_by_st = models.ForeignKey(ServiceTicket, null=True, blank=True,
-                                      on_delete=models.PROTECT,
-                                      verbose_name=_('granted by service ticket'))
-    granted_by_pt = models.ForeignKey(ProxyTicket, null=True, blank=True,
-                                      on_delete=models.PROTECT,
-                                      verbose_name=_('granted by proxy ticket'))
-
     objects = ProxyGrantingTicketManager()
 
     class Meta:

@@ -19,7 +19,7 @@ from mama_cas.mixins import LoginRequiredMixin
 from mama_cas.mixins import LogoutUserMixin
 from mama_cas.mixins import NeverCacheMixin
 from mama_cas.mixins import ValidateTicketMixin
-from mama_cas.models import ProxyTicket
+from mama_cas.mongo_models import MProxyTicket
 from mama_cas.models import ServiceTicket
 from mama_cas.response import ValidationResponse
 from mama_cas.response import ProxyResponse
@@ -293,7 +293,7 @@ class ProxyValidateView(NeverCacheMixin, ValidateTicketMixin,
         pgturl = self.request.GET.get('pgtUrl')
         renew = to_bool(self.request.GET.get('renew'))
 
-        if not ticket or ticket.startswith(ProxyTicket.TICKET_PREFIX):
+        if not ticket or ticket.startswith(MProxyTicket.TICKET_PREFIX):
             # If no ticket parameter is present, attempt to validate it
             # anyway so the appropriate error is raised
             t, pgt, proxies, error = self.validate_proxy_ticket(service,

@@ -15,7 +15,8 @@ from mama_cas.views import WarnView
 from mama_cas.views import SamlValidateView
 
 
-urlpatterns = patterns('',
+urlpatterns = patterns(
+    '',
     url(r'^login/?$',
         LoginView.as_view(),
         name='cas_login'),
