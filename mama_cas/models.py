@@ -136,7 +136,7 @@ class TicketManager(object):
         when the user logs out to ensure all issued tickets are no longer
         valid for future authentication attempts.
         """
-        for ticket in self.filter(user=user, consumed__isnull=True,
+        for ticket in self.filter(user=user, consumed__exists=False,
                                   expires__gt=now()):
             ticket.consume()
 
